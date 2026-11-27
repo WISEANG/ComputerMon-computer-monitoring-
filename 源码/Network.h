@@ -11,5 +11,5 @@ struct InterfaceBytes {
 };
 NetworkRates NetworkDelta(const std::vector<InterfaceBytes>& before,
                           const std::vector<InterfaceBytes>& after, uint64_t elapsedMs);
-NetworkRates ReadNetworkRates();
+NetworkRates ReadNetworkRates(bool enabled);
 std::wstring FormatRate(double bytesPerSecond);

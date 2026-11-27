@@ -24,10 +24,16 @@ NetworkRates NetworkDelta(const std::vector<InterfaceBytes>& before,
     return {sent * 1000 / elapsedMs, received * 1000 / elapsedMs};
 }
 
-NetworkRates ReadNetworkRates() {
+NetworkRates ReadNetworkRates(bool enabled) {
     static uint64_t lastRead = 0;
     static NetworkRates cached;
     static std::vector<InterfaceBytes> previous, current;
+    if (!enabled) {
+        previous.clear();
+        lastRead = 0;
+        cached = {};
+        return {};
+    }
     const uint64_t now = GetTickCount64();
     if (lastRead && now - lastRead < 750) return cached;
     PMIB_IF_TABLE2 raw = nullptr;

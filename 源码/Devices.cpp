@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "Devices.h"
+#include "NanoMouse.h"
 #include <setupapi.h>
 #include <initguid.h>
 #include <devpkey.h>
@@ -161,11 +162,13 @@ struct Watch {
         }
     }
 };
-bool Transfer(HANDLE file,bool write,BYTE* data,DWORD length,DWORD timeout){
+bool Transfer(HANDLE file,bool write,BYTE* data,DWORD length,DWORD timeout,bool* timedOut=nullptr){
+    if(timedOut)*timedOut=false;
     Handle event(CreateEventW(nullptr,TRUE,FALSE,nullptr));OVERLAPPED ov{};ov.hEvent=event.h;DWORD done=0;
     BOOL ok=write?WriteFile(file,data,length,&done,&ov):ReadFile(file,data,length,&done,&ov);
     if(!ok){if(GetLastError()!=ERROR_IO_PENDING)return false;
-        if(WaitForSingleObject(event.h,timeout)!=WAIT_OBJECT_0){CancelIoEx(file,&ov);GetOverlappedResult(file,&ov,&done,TRUE);return false;}
+        auto waited=WaitForSingleObject(event.h,timeout);
+        if(waited!=WAIT_OBJECT_0){if(timedOut)*timedOut=waited==WAIT_TIMEOUT;CancelIoEx(file,&ov);GetOverlappedResult(file,&ov,&done,TRUE);return false;}
         if(!GetOverlappedResult(file,&ov,&done,FALSE))return false;
     }return done==length;
 }
@@ -190,6 +193,123 @@ void ReadK380(Device&d,const std::vector<HidInfo>&hids){
         if(count++>=2)break;Handle file(CreateFileW(h.path.c_str(),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr));if(file.h==INVALID_HANDLE_VALUE)continue;
         for(BYTE slot:{BYTE(0),BYTE(0xff)}){auto v=K380Register(file.h,h,slot,0x0d);if(v.size()>=3&&v[0]<=100){d.battery=v[0];d.source=L"Logitech HID++ 电量";d.approximate=true;d.batteryTime=Now();return;}
             v=K380Register(file.h,h,slot,7);if(v.size()<2)continue;d.level=v[0]==7?L"充足":v[0]==5?L"良好":v[0]==3?L"偏低":v[0]==1?L"极低":L"";if(!d.level.empty()){d.source=L"Logitech HID++ 档位";d.batteryTime=Now();return;}}
+    }
+}
+// Windows exposes the short and long HID++ reports as separate collections.
+// Open both before sending: a short request can produce a long reply.
+struct NanoPort {
+    Handle file;
+    DWORD length;
+    explicit NanoPort(const HidInfo& h):file(CreateFileW(h.path.c_str(),GENERIC_READ|GENERIC_WRITE,
+        FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr)),length(h.caps.InputReportByteLength) {}
+};
+struct NanoLink {
+    std::vector<std::unique_ptr<NanoPort>> ports;
+    BYTE client=8;
+    bool legacy=false;
+    NanoMouse::Bytes Exchange(size_t tx,BYTE slot,BYTE feature,BYTE function,NanoMouse::Params params) {
+        legacy=false;
+        auto& port=*ports[tx];
+        BYTE request[20]={BYTE(port.length==7?0x10:0x11),slot,feature,function};
+        std::copy(params.begin(),params.end(),request+4);
+        if (!Transfer(port.file.h,true,request,port.length,350)) return {};
+        auto deadline=GetTickCount64()+450;
+        for (;;) for (auto& input:ports) {
+            auto now=GetTickCount64();
+            if (now>=deadline) return {};
+            DWORD wait=DWORD(deadline-now);
+            if (ports.size()>1) wait=std::min<DWORD>(wait,35);
+            BYTE reply[20]{};
+            bool timedOut=false;
+            if (!Transfer(input->file.h,false,reply,input->length,wait,&timedOut)) {
+                if (!timedOut) return {};
+                continue;
+            }
+            auto match=NanoMouse::Match(reply,input->length,slot,feature,function);
+            if (match==NanoMouse::Reply::Match) return {reply+4,reply+input->length};
+            if (match==NanoMouse::Reply::Error) {
+                legacy=feature==0 && (function>>4)==1 && reply[2]==0x8f && reply[5]==1;
+                return {};
+            }
+        }
+    }
+    NanoMouse::Bytes Query(size_t tx,BYTE slot,BYTE feature,BYTE function,NanoMouse::Params params) {
+        client=client==15?8:client+1;
+        return Exchange(tx,slot,feature,BYTE((function<<4)|client),params);
+    }
+};
+bool NanoChannel(const HidInfo& h) {
+    if (h.caps.UsagePage!=0xff00 ||
+        h.caps.InputReportByteLength!=h.caps.OutputReportByteLength) return false;
+    return (h.caps.Usage==1 && h.caps.InputReportByteLength==7) || (h.caps.Usage==2 && h.caps.InputReportByteLength==20);
+}
+void ScanNano(const std::vector<HidInfo>& hids,std::vector<Device>& devices,std::map<std::wstring,Device>& history,
+              std::set<std::wstring>& present,std::atomic<bool>& stop) {
+    std::map<std::wstring,std::vector<const HidInfo*>> groups;
+    for (auto& h:hids) {
+        if (h.bus!=L"USB" || h.vid!=0x046d || (h.pid!=0xc52f && h.pid!=0xc534)) continue;
+        if (!h.container.empty() || NanoChannel(h)) groups[h.container.empty()?h.path:h.container].push_back(&h);
+    }
+    for (auto& [id,channels]:groups) {
+        NanoLink link;
+        for (auto* h:channels) {
+            if (!NanoChannel(*h)) continue;
+            auto port=std::make_unique<NanoPort>(*h);
+            if (port->file.h!=INVALID_HANDLE_VALUE) link.ports.push_back(std::move(port));
+        }
+        // Nano receivers commonly accept short commands, even for long replies.
+        std::sort(link.ports.begin(),link.ports.end(),[](auto& a,auto& b){return a->length<b->length;});
+        wchar_t usb[32]{};
+        swprintf(usb,32,L"USB 046D:%04X",channels.front()->pid);
+        bool listed=false,unknownType=false;
+        for (BYTE slot=1;slot<=2 && !stop;slot++) {
+            Device d;
+            d.key=L"nano:"+id+L":"+std::to_wstring(slot);
+            d.address=std::wstring(usb)+L" · 槽 "+std::to_wstring(slot);
+            d.transport=L"2.4G 接收器";
+            d.receiver=true;
+            auto state=NanoMouse::Result::Asleep;
+            for (size_t tx=0;tx<link.ports.size() && state==NanoMouse::Result::Asleep;tx++) {
+                auto query=[&](BYTE feature,BYTE function,NanoMouse::Params params){return link.Query(tx,slot,feature,function,params);};
+                state=NanoMouse::Poll(query,d);
+                if (state==NanoMouse::Result::Asleep && link.legacy) {
+                    // Only a positive mouse kind (RAP type 2) permits legacy battery reads.
+                    auto sub=BYTE(0x20+slot-1);
+                    auto info=link.Exchange(tx,0xff,0x83,0xb5,{sub,0,0});
+                    if (info.size()<8 || info[0]!=sub) state=NanoMouse::Result::UnknownType;
+                    else if ((info[7]&15)!=2) state=NanoMouse::Result::OtherDevice;
+                    else {
+                        d.connected=1;d.name=L"罗技 Nano 无线鼠标";state=NanoMouse::Result::Mouse;
+                        auto charge=link.Exchange(tx,slot,0x81,0x0d,{});
+                        if (charge.size()>=3 && charge[0]<=100) d.battery=charge[0];
+                        else {
+                            auto status=link.Exchange(tx,slot,0x81,7,{});
+                            if (status.size()>=2) {
+                                switch (status[0]) { case 1:d.level=L"极低";break; case 3:d.level=L"偏低";break;
+                                    case 5:d.level=L"良好";break; case 7:d.level=L"充足";break; }
+                            }
+                        }
+                        if (d.battery>=0 || !d.level.empty()) d.source=L"HID++ 电量寄存器";
+                    }
+                }
+            }
+            if (state==NanoMouse::Result::Mouse) {
+                if (!d.source.empty()) d.batteryTime=Now();
+                history[d.key]=d;
+            } else if (state==NanoMouse::Result::Asleep && history.count(d.key)) {
+                d=history.at(d.key);d.connected=-1;d.detail=L"鼠标休眠或暂未响应";
+            } else {
+                history.erase(d.key);
+                unknownType|=state==NanoMouse::Result::UnknownType;
+                continue;
+            }
+            present.insert(d.key);devices.push_back(std::move(d));listed=true;
+        }
+        if (!listed && !stop) {
+            Device d;d.key=L"nano:"+id;d.name=L"罗技 Nano 接收器";d.address=usb;d.transport=L"USB / 2.4G";d.receiver=true;
+            d.detail=link.ports.empty()?L"未发现可读取的 HID++ 接口":unknownType?L"配对设备已响应，无法确认鼠标类型":L"暂未发现已响应的鼠标，可移动鼠标后刷新";
+            devices.push_back(std::move(d));
+        }
     }
 }
 struct Receiver {
@@ -257,7 +377,7 @@ std::wstring LogitechModelName(const std::wstring&name){
     return L"";
 }
 std::wstring FormatMemory(ULONGLONG bytes){wchar_t text[64];swprintf(text,64,L"%.1f GB",double(bytes)/1073741824.0);return text;}
-Resources ReadResources(){
+Resources ReadResources(bool networkEnabled){
     Resources r;static ULONGLONG previousIdle=0,previousTotal=0;FILETIME i,k,u;
     auto value=[](FILETIME t){return(ULONGLONG(t.dwHighDateTime)<<32)|t.dwLowDateTime;};
     if(GetSystemTimes(&i,&k,&u)){ULONGLONG idle=value(i),total=value(k)+value(u);if(previousTotal&&total>previousTotal&&idle>=previousIdle)r.cpu=std::clamp(int(100.0*(1.0-double(idle-previousIdle)/(total-previousTotal))+0.5),0,100);previousTotal=total;previousIdle=idle;}
@@ -276,7 +396,7 @@ Resources ReadResources(){
     auto now=GetTickCount64();if(!last||now-last>=5000){last=now;size_t capacity=size_t(r.workingSet/4096*2+8192);if(capacity>pages.size())pages.resize(capacity);
         if(QueryWorkingSet(GetCurrentProcess(),pages.data(),DWORD(pages.size()*sizeof(ULONG_PTR)))){auto info=reinterpret_cast<PSAPI_WORKING_SET_INFORMATION*>(pages.data());privateBytes=0;for(ULONG_PTR n=0;n<info->NumberOfEntries;n++)if(!info->WorkingSetInfo[n].Shared)privateBytes+=4096;}}
     r.privateWorkingSet=privateBytes;
-    r.network=ReadNetworkRates();
+    r.network=ReadNetworkRates(networkEnabled);
     return r;
 }
 std::vector<MonitorItem> MonitorItems(const Resources&r,const std::vector<Device>&devices,bool cpu,bool memory,bool battery,bool computerBattery,bool upload,bool download){
@@ -378,6 +498,7 @@ std::vector<Device> Devices::Scan(){
             receivers.insert(h.path);auto&r=b.receivers[h.path];if(!r)r=std::make_unique<Receiver>(h.path);auto d=r->Poll(L"logitech:"+h.path);b.history[h.path]=d;devices.push_back(std::move(d));
         }
     }
+    ScanNano(b.hids,devices,b.history,receivers,b.stop);
     for(auto&d:devices)ReadK380(d,b.hids);
     for(auto it=b.watches.begin();it!=b.watches.end();)if(!watched.count(it->first))it=b.watches.erase(it);else++it;
     for(auto it=b.receivers.begin();it!=b.receivers.end();)if(!receivers.count(it->first))it=b.receivers.erase(it);else++it;
@@ -385,8 +506,8 @@ std::vector<Device> Devices::Scan(){
     std::stable_sort(devices.begin(),devices.end(),[](auto&a,auto&d){return (a.connected==1)>(d.connected==1);});return devices;
 }
 std::wstring Devices::Diagnostic(const std::vector<Device>&devices){
-    std::wstring text=L"设备电量悬浮窗 2.1 原生版 · 本机诊断\r\n";
-    for(auto&d:devices)text+=d.name+L" | "+d.StateText()+L" | "+d.BatteryText()+L" | "+d.transport+L" | "+d.Note()+L"\r\n";
+    std::wstring text=L"设备电量悬浮窗 2.2.0.17 原生版 · 本机诊断\r\n";
+    for(auto&d:devices)text+=d.name+L" | "+d.StateText()+L" | "+d.BatteryText()+L" | "+d.transport+L" | "+d.Note()+(d.key.starts_with(L"nano:")?L" | "+d.address+L" | "+d.detail:L"")+L"\r\n";
     text+=L"\r\nHID 接口：\r\n";for(auto&h:impl->hids){wchar_t id[128];swprintf(id,128,L"VID_%04X PID_%04X · Usage %04X:%04X",h.vid,h.pid,h.caps.UsagePage,h.caps.Usage);text+=std::wstring(id)+L" | "+h.product+L" | "+h.bus+L" | 电量字段 "+std::to_wstring(h.fields.size());auto it=impl->watches.find(h.path);if(it!=impl->watches.end())text+=L" | 输入帧 "+std::to_wstring(it->second->received);text+=L"\r\n";}return text;
 }
 

@@ -6,6 +6,7 @@
 #define _UNICODE
 #endif
 #include "Devices.h"
+#include "NanoMouse.h"
 #include "DeviceNames.h"
 #include "Capsule.h"
 #include "Dpi.h"
@@ -26,7 +27,7 @@ constexpr wchar_t CapsuleClass[]=L"BlueBatteryCapsuleNativeV2";
 constexpr wchar_t HoverListClass[]=L"BlueBatteryHoverListNativeV2";
 constexpr wchar_t MainClass[]=L"BlueBatteryDetailNativeV2";
 constexpr UINT Changed=WM_APP+10,TrayMessage=WM_APP+11,RaiseCapsule=WM_APP+12;
-constexpr int PanelActionsTop=116, PanelActionsBottom=143, DeviceListTop=147;
+
 constexpr UINT Open=100,Refresh=101,All=102,Pin=103,HidePanel=104,Exit=105,Cpu=110,Memory=111,Battery=112,Rows2=113,Rows3=114,Notice=115,Startup=116,Diagnostic=117,Bluetooth=118,Collapse=119,Opacity100=120,Opacity90=121,Opacity75=122,Help=123,CapsuleTaskbar=124,CapsuleDesktop=125,CapsuleReset=126,ComputerBattery=127;
 constexpr UINT BackgroundSystem=128, BackgroundTransparent=129, BackgroundCustom=130, Upload=131, Download=132;
 std::wstring MemoryText(ULONGLONG bytes){wchar_t text[32];swprintf(text,32,L"%.1f",double(bytes)/1048576);return text;}
@@ -37,7 +38,8 @@ std::wstring Beside(const std::wstring& name){auto p=Executable();return p.subst
 std::wstring ReadText(const std::wstring&path){HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);if(f==INVALID_HANDLE_VALUE)return L"";DWORD n=GetFileSize(f,nullptr);if(n>1024*1024){CloseHandle(f);return L"";}std::string s(n,0);DWORD read;ReadFile(f,s.data(),n,&read,nullptr);CloseHandle(f);int count=MultiByteToWideChar(CP_UTF8,0,s.data(),read,nullptr,0);std::wstring text(count,0);MultiByteToWideChar(CP_UTF8,0,s.data(),read,text.data(),count);return text;}
 struct Settings {
     CapsuleBackground background;
-    bool upload=true,download=true;
+    bool upload=false,download=false;
+    bool NetworkEnabled() const { return upload || download; }
     bool cpu=true,memory=true,battery=true,computerBattery=true,all=false,pin=true,notice=true,collapsed=false,desktop=false;
     int rows=2,interval=15,opacity=100,left=INT_MIN,top=INT_MIN,capsuleLeft=INT_MIN,capsuleTop=INT_MIN;
     std::wstring path=Folder()+L"\\native.ini";
@@ -57,7 +59,7 @@ struct Settings {
             background.mode = static_cast<BackgroundMode>(mode);
         const int color = get(L"CapsuleBackgroundColor", int(background.color));
         if (color >= 0 && color <= 0xffffff) background.color = COLORREF(color);
-        upload=get(L"Upload",1)!=0; download=get(L"Download",1)!=0;
+        upload=get(L"Upload",0)!=0; download=get(L"Download",0)!=0;
         cpu=get(L"Cpu",1)!=0;memory=get(L"Memory",1)!=0;battery=get(L"Battery",1)!=0;computerBattery=get(L"ComputerBattery",1)!=0;all=get(L"All",0)!=0;pin=get(L"Pin",1)!=0;notice=get(L"Notice",1)!=0;collapsed=get(L"Collapsed",0)!=0;desktop=get(L"DesktopMode",0)!=0;
         rows=get(L"Rows",2)==3?3:2;int n=get(L"Interval",15);interval=ValidInterval(n)?n:15;opacity=get(L"Opacity",100);if(opacity!=75&&opacity!=90)opacity=100;left=get(L"Left",INT_MIN);top=get(L"Top",INT_MIN);capsuleLeft=get(L"CapsuleLeft",INT_MIN);capsuleTop=get(L"CapsuleTop",INT_MIN);
     }
@@ -148,7 +150,7 @@ struct App {
         if(!icon)icon=CopyIcon(LoadIconW(nullptr,IDI_APPLICATION));
         WNDCLASSEXW c{sizeof c};c.style=CS_DBLCLKS;c.lpfnWndProc=WindowProc;c.hInstance=instance;c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hIcon=icon;c.hIconSm=icon;c.lpszClassName=CapsuleClass;RegisterClassExW(&c);c.lpszClassName=HoverListClass;RegisterClassExW(&c);c.lpszClassName=MainClass;RegisterClassExW(&c);
         small=MakeFont(12);normal=MakeFont(14);big=MakeFont(21,true);
-        capsule=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_LAYERED,CapsuleClass,L"设备电量悬浮窗 2.2.0.16 原生版",WS_POPUP,0,0,taskWidth,44,nullptr,nullptr,instance,nullptr);
+        capsule=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_LAYERED,CapsuleClass,L"设备电量悬浮窗 2.2.0.17 原生版",WS_POPUP,0,0,taskWidth,44,nullptr,nullptr,instance,nullptr);
         if(!capsule)throw std::runtime_error("Cannot create taskbar window");
         tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,capsule,nullptr,instance,nullptr);
         TOOLINFOW info{sizeof info};info.uFlags=TTF_IDISHWND|TTF_SUBCLASS;info.hwnd=capsule;info.uId=reinterpret_cast<UINT_PTR>(capsule);info.lpszText=const_cast<wchar_t*>(L"双击打开监控界面 · 右键配置");SendMessageW(tooltip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&info));SendMessageW(tooltip,TTM_SETMAXTIPWIDTH,0,600);
@@ -374,7 +376,7 @@ struct App {
     }
     void Tick(){
         DWORD theme=0,themeSize=sizeof theme;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&theme,&themeSize);bool light=theme!=0;if(lightTaskbar!=light){lightTaskbar=light;InvalidateRect(capsule,nullptr,FALSE);}
-        resources=ReadResources();auto next=MonitorItems(resources,devices,settings.cpu,settings.memory,settings.battery,settings.computerBattery,settings.upload,settings.download);
+        resources=ReadResources(settings.NetworkEnabled());auto next=MonitorItems(resources,devices,settings.cpu,settings.memory,settings.battery,settings.computerBattery,settings.upload,settings.download);
         if(next!=items){items=std::move(next);InvalidateRect(capsule,nullptr,FALSE);}
         bool enableTooltip=!HoverListNeeded();
         if(enableTooltip!=tooltipEnabled){
@@ -417,7 +419,7 @@ struct App {
         HideHoverList();
         HMENU menu=CreatePopupMenu(),content=CreatePopupMenu(),layout=CreatePopupMenu(),interval=CreatePopupMenu(),alpha=CreatePopupMenu(),capsuleMenu=CreatePopupMenu();
         auto item=[](HMENU m,UINT id,const wchar_t*text,bool check=false){AppendMenuW(m,MF_STRING|(check?MF_CHECKED:0),id,text);};
-        AppendMenuW(menu,MF_STRING|MF_DISABLED,0,L"设备电量悬浮窗 2.2.0.16 · 原生轻量版");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+        AppendMenuW(menu,MF_STRING|MF_DISABLED,0,L"设备电量悬浮窗 2.2.0.17 · 原生轻量版");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
         item(menu,Open,L"显示监控界面");item(menu,Refresh,L"立即刷新");
         constexpr UINT firstDevice = 20000;
         HMENU rename = CreatePopupMenu();
@@ -508,23 +510,33 @@ struct App {
             std::wstring computerText=resources.computerBattery>=0?std::to_wstring(resources.computerBattery)+L"%":resources.computerBatteryPresent?L"—":L"无电池";
             Draw(dc,L"CPU "+(resources.cpu<0?L"采样中":std::to_wstring(resources.cpu)+L"%")+L"   ·   内存 "+std::to_wstring(resources.memory)+L"%   ·   电脑 "+computerText,{16,43,r.right-14,68},RGB(148,163,184),small);
             Draw(dc,FormatMemory(resources.used)+L" / "+FormatMemory(resources.total)+L"   ·   原生轻量版",{16,67,r.right-14,89},RGB(148,163,184),small);
-            Draw(dc,L"上传  "+FormatRate(resources.network.upload)+L"     下载  "+FormatRate(resources.network.download),
-                 {16,90,r.right-14,113},RGB(175,201,219),normal);
-            Draw(dc,settings.all?L"[当前]     [全部 ✓]     [刷新]     [收起]":L"[当前 ✓]     [全部]     [刷新]     [收起]",{16,PanelActionsTop,r.right-14,PanelActionsBottom},RGB(124,182,255),normal);
-            RECT viewport{0,DeviceListTop,r.right,std::max<LONG>(DeviceListTop,r.bottom-32)};int saved=SaveDC(dc);IntersectClipRect(dc,viewport.left,viewport.top,viewport.right,viewport.bottom);
+            if (settings.NetworkEnabled()) {
+                std::wstring rates;
+                if (settings.upload) rates=L"上传  "+FormatRate(resources.network.upload);
+                if (settings.download) {
+                    if (!rates.empty()) rates+=L"     ";
+                    rates+=L"下载  "+FormatRate(resources.network.download);
+                }
+                Draw(dc,rates,{16,90,r.right-14,113},RGB(175,201,219),normal);
+            }
+            Draw(dc,settings.all?L"[当前]     [全部 ✓]     [刷新]     [收起]":L"[当前 ✓]     [全部]     [刷新]     [收起]",{16,PanelActionsTop(),r.right-14,PanelActionsBottom()},RGB(124,182,255),normal);
+            RECT viewport{0,DeviceListTop(),r.right,std::max<LONG>(DeviceListTop(),r.bottom-32)};int saved=SaveDC(dc);IntersectClipRect(dc,viewport.left,viewport.top,viewport.right,viewport.bottom);
             if(!settings.collapsed){auto visible=VisibleDevices();int maxScroll=std::max<int>(0,int(visible.size())*116-(viewport.bottom-viewport.top));scroll=std::clamp(scroll,0,maxScroll);
-                if(visible.empty())Draw(dc,L"当前没有已连接设备，可切换“全部”查看",{16,DeviceListTop+17,r.right-14,DeviceListTop+77},RGB(148,163,184),normal,DT_WORDBREAK);
-                int y=DeviceListTop-scroll;for(auto*d:visible){RECT card{12,y+3,r.right-12,y+110};Fill(dc,card,d->connected==1?RGB(30,45,67):RGB(25,37,56));
+                if(visible.empty())Draw(dc,L"当前没有已连接设备，可切换“全部”查看",{16,DeviceListTop()+17,r.right-14,DeviceListTop()+77},RGB(148,163,184),normal,DT_WORDBREAK);
+                int y=DeviceListTop()-scroll;for(auto*d:visible){RECT card{12,y+3,r.right-12,y+110};Fill(dc,card,d->connected==1?RGB(30,45,67):RGB(25,37,56));
                     Draw(dc,d->DisplayName(),{24,y+9,r.right-100,y+37},RGB(237,244,255),normal);
-                    Draw(dc,d->BatteryText(),{r.right-98,y+7,r.right-24,y+39},d->connected!=1?RGB(148,163,184):d->battery<=20?RGB(255,176,120):RGB(97,219,178),big,DT_RIGHT|DT_SINGLELINE|DT_VCENTER);
+                    Draw(dc,d->BatteryText(),{r.right-98,y+7,r.right-24,y+39},d->connected!=1 || (d->battery<0 && d->level.empty())?RGB(148,163,184):((d->battery>=0 && d->battery<=20) || d->level==L"极低" || d->level==L"偏低")?RGB(255,176,120):RGB(97,219,178),big,DT_RIGHT|DT_SINGLELINE|DT_VCENTER);
                     Draw(dc,d->StateText()+L" · "+d->transport,{24,y+38,r.right-24,y+58},RGB(148,163,184),small);
                     if(d->battery>=0){RECT track{24,y+65,r.right-24,y+69};Fill(dc,track,RGB(53,67,90));track.right=track.left+(track.right-track.left)*d->battery/100;Fill(dc,track,d->connected==1?RGB(97,219,178):RGB(148,163,184));}
                     Draw(dc,d->Note(),{24,y+78,r.right-24,y+101},RGB(148,163,184),small);y+=116;
                 }
-            }RestoreDC(dc,saved);Fill(dc,{0,std::max<LONG>(DeviceListTop,r.bottom-32),r.right,r.bottom},RGB(19,29,45));Draw(dc,scanStatus,{16,r.bottom-30,r.right-14,r.bottom-4},RGB(148,163,184),small);
+            }RestoreDC(dc,saved);Fill(dc,{0,std::max<LONG>(DeviceListTop(),r.bottom-32),r.right,r.bottom},RGB(19,29,45));Draw(dc,scanStatus,{16,r.bottom-30,r.right-14,r.bottom-4},RGB(148,163,184),small);
         RestoreDC(dc,mapping);BitBlt(target,0,0,pixels.right,pixels.bottom,dc,0,0,SRCCOPY);SelectObject(dc,oldBitmap);DeleteObject(bitmap);DeleteDC(dc);EndPaint(h,&paint);
     }
-    void DetailAt(int y){auto v=VisibleDevices();int index=(y-DeviceListTop+scroll)/116;if(y<DeviceListTop||index<0||index>=int(v.size()))return;auto&d=*v[index];std::wstring text=d.DisplayName()+(d.alias.empty()?L"":L"\n原名："+d.name)+L"\n连接："+d.StateText()+L"\n电量："+d.BatteryText()+L"\n来源："+d.Note()+L"\n传输："+d.transport+L"\n标识："+d.address+L"\n"+d.detail;MessageBoxW(panel,text.c_str(),L"设备详情",MB_OK|MB_ICONINFORMATION);}
+    int PanelActionsTop() const { return settings.NetworkEnabled() ? 116 : 90; }
+    int PanelActionsBottom() const { return PanelActionsTop()+27; }
+    int DeviceListTop() const { return PanelActionsTop()+31; }
+    void DetailAt(int y){auto v=VisibleDevices();int index=(y-DeviceListTop()+scroll)/116;if(y<DeviceListTop()||index<0||index>=int(v.size()))return;auto&d=*v[index];std::wstring text=d.DisplayName()+(d.alias.empty()?L"":L"\n原名："+d.name)+L"\n连接："+d.StateText()+L"\n电量："+d.BatteryText()+L"\n来源："+d.Note()+L"\n传输："+d.transport+L"\n标识："+d.address+L"\n"+d.detail;MessageBoxW(panel,text.c_str(),L"设备详情",MB_OK|MB_ICONINFORMATION);}
     LRESULT Message(HWND h,UINT msg,WPARAM w,LPARAM l){
         if(msg==taskbarCreated){if(h==capsule){AddTray();EnsureCapsuleTopmost();Position();}return 0;}
         switch(msg){
@@ -536,7 +548,7 @@ struct App {
             RECT r{};GetClientRect(h,&r);
             if(GET_Y_LPARAM(l)>=r.bottom-DpiPixels(32,WindowDpi(h)))ScrollHover(visibleHoverRows,true);
             return 0;
-        }if(h==capsule&&draggingCapsule){EndCapsuleDrag();return 0;}if(h==panel&&DpiLogical(GET_Y_LPARAM(l),h)>=PanelActionsTop&&DpiLogical(GET_Y_LPARAM(l),h)<=PanelActionsBottom){int x=DpiLogical(GET_X_LPARAM(l),h);if(x<90){settings.all=false;Save();scroll=0;}else if(x<180){settings.all=true;Save();scroll=0;}else if(x<270)Request();else{Command(HidePanel);return 0;}InvalidateRect(panel,nullptr,FALSE);}return 0;
+        }if(h==capsule&&draggingCapsule){EndCapsuleDrag();return 0;}if(h==panel&&DpiLogical(GET_Y_LPARAM(l),h)>=PanelActionsTop()&&DpiLogical(GET_Y_LPARAM(l),h)<=PanelActionsBottom()){int x=DpiLogical(GET_X_LPARAM(l),h);if(x<90){settings.all=false;Save();scroll=0;}else if(x<180){settings.all=true;Save();scroll=0;}else if(x<270)Request();else{Command(HidePanel);return 0;}InvalidateRect(panel,nullptr,FALSE);}return 0;
         case WM_CAPTURECHANGED:case WM_CANCELMODE:if(h==capsule)EndCapsuleDrag();break;
         case WM_RBUTTONUP:if(h==hoverList)Menu(capsule);else Menu(h);return 0;
         case WM_MOUSEWHEEL:if(h==hoverList){
@@ -595,7 +607,42 @@ int SelfTest(const std::wstring&file){
     auto down=MonitorItems(r,{},false,false,false,false,false,true);
     check(up.size()==1 && up[0].Label()==L"↑" && up[0].Text()==L"上传: 21 KB/s" &&
           down.size()==1 && down[0].Label()==L"↓" && down[0].Text()==L"下载: 42 KB/s",L"Network metrics switch independently");
+    auto first=ReadNetworkRates(true);ReadNetworkRates(false);auto resumed=ReadNetworkRates(true);
+    check(first.upload<0 && resumed.download<0,L"Network restarts with a fresh counter baseline");
+    ReadNetworkRates(false);
+    auto probe=[](BYTE kind,BYTE flags,BYTE percent,BYTE level,bool awake,Device& d,int& batteryQueries) {
+        auto query=[&](BYTE index,BYTE function,NanoMouse::Params p)->NanoMouse::Bytes {
+            if (!index && function==1) return {2,0,BYTE(awake?p[2]:0)};
+            if (!index && p[0]==0 && p[1]==5) return {11,0,0};
+            if (!index && p[0]==0x10) {batteryQueries++;return {BYTE(p[1]==4?12:0),0,0};}
+            if (index==11 && function==2) return {kind,0,0};
+            if (index==11 && function==0) return {4,0,0};
+            if (index==11 && function==1) return p[0]?NanoMouse::Bytes{'5',0,0}:NanoMouse::Bytes{'M','1','8'};
+            if (index==12 && function==0) return {15,flags,0};
+            if (index==12 && function==1) return {percent,level,0};
+            return {};
+        };
+        return NanoMouse::Poll(query,d);
+    };
+    Device percentMouse,levelMouse,invalidMouse,keyboard,sleeping;int queries=0;
+    check(probe(3,2,0,1,true,percentMouse,queries)==NanoMouse::Result::Mouse && percentMouse.battery==0 && percentMouse.name==L"罗技 M185",L"Nano mouse reports real zero and a chunked device name");
+    probe(3,0,0,2,true,levelMouse,queries);
+    check(levelMouse.battery<0 && levelMouse.BatteryText()==L"偏低",L"Nano mouse reports a level without inventing a percent");
+    probe(3,0,0,3,true,invalidMouse,queries);
+    check(invalidMouse.BatteryText()==L"—",L"Invalid Nano level stays unknown");
+    queries=0;
+    check(probe(0,2,88,8,true,keyboard,queries)==NanoMouse::Result::OtherDevice &&
+          probe(3,2,88,8,false,sleeping,queries)==NanoMouse::Result::Asleep && !queries,L"Keyboard slots and sleeping devices are never queried for mouse battery");
+    BYTE reply[]={0x10,2,12,0x1a,35,4,0};
+    check(NanoMouse::Match(reply,7,2,12,0x1a)==NanoMouse::Reply::Match &&
+          NanoMouse::Match(reply,7,1,12,0x1a)==NanoMouse::Reply::Unrelated &&
+          NanoMouse::Match(reply,7,2,12,0x1b)==NanoMouse::Reply::Unrelated &&
+          NanoMouse::Match(reply,6,2,12,0x1a)==NanoMouse::Reply::Unrelated,L"Reject cross-slot, stale and truncated receiver replies");
     Settings backgroundSaved; backgroundSaved.path=file+L".background.ini";
+    check(!backgroundSaved.NetworkEnabled(),L"New profiles default to network monitoring off");
+    WritePrivateProfileStringW(L"Monitor",L"Rows",L"3",backgroundSaved.path.c_str());
+    backgroundSaved.Load();
+    check(!backgroundSaved.upload && !backgroundSaved.download,L"Existing profiles without network keys default to off");
     backgroundSaved.upload=false; backgroundSaved.download=true;
     backgroundSaved.background={BackgroundMode::Custom,RGB(40,110,210)}; backgroundSaved.Save();
     Settings backgroundLoaded; backgroundLoaded.path=backgroundSaved.path; backgroundLoaded.Load();
@@ -740,8 +787,8 @@ int UiTest(const std::wstring&path){
     for(const auto&work:workAreas){
         SetWindowPos(app.panel,nullptr,work.left+48,work.top+48,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
         UINT dpi=WindowDpi(app.panel);app.settings.all=false;
-        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(120,dpi),DpiPixels((PanelActionsTop+PanelActionsBottom)/2,dpi)));bool hit=app.settings.all;
-        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(45,dpi),DpiPixels((PanelActionsTop+PanelActionsBottom)/2,dpi)));hit=hit&&!app.settings.all;
+        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(120,dpi),DpiPixels((app.PanelActionsTop()+app.PanelActionsBottom())/2,dpi)));bool hit=app.settings.all;
+        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(45,dpi),DpiPixels((app.PanelActionsTop()+app.PanelActionsBottom())/2,dpi)));hit=hit&&!app.settings.all;
         InvalidateRect(app.panel,nullptr,FALSE);UpdateWindow(app.panel);ok &= verify(hit,L"panel hit targets");
         monitorReport+=(hit?L"PASS":L"FAIL")+std::wstring(L": monitor panel painting / button hit coordinates at DPI ")+std::to_wstring(dpi)+L"\n";
     }

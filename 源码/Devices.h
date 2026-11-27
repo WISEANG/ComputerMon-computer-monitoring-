@@ -25,7 +25,7 @@ struct Resources {
     bool computerBatteryPresent=false, computerCharging=false, computerAc=false;
     ULONGLONG used=0,total=0,workingSet=0,privateWorkingSet=0,commit=0;
 };
-Resources ReadResources();
+Resources ReadResources(bool networkEnabled);
 std::wstring FormatMemory(ULONGLONG bytes);
 bool Current(const Device& device);
 int NormalizeBattery(int minimum,int maximum,ULONG value);
