@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include "MonitorItem.h"
+#include "Network.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -18,6 +19,7 @@ struct Device {
     std::wstring Note() const;
 };
 struct Resources {
+    NetworkRates network;
     int cpu=-1, memory=-1;
     int computerBattery=-1;
     bool computerBatteryPresent=false, computerCharging=false, computerAc=false;
@@ -30,7 +32,7 @@ int NormalizeBattery(int minimum,int maximum,ULONG value);
 int RapooBattery(const unsigned char* report,size_t length);
 bool LogitechBattery(const unsigned char* report,size_t length,int& value);
 std::wstring LogitechModelName(const std::wstring& name);
-std::vector<MonitorItem> MonitorItems(const Resources&,const std::vector<Device>&,bool,bool,bool,bool);
+std::vector<MonitorItem> MonitorItems(const Resources&,const std::vector<Device>&,bool,bool,bool,bool,bool upload=false,bool download=false);
 void WriteUtf8(const std::wstring& path,const std::wstring& text);
 class Devices {
     struct Impl;

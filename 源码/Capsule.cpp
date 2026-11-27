@@ -11,12 +11,13 @@ void RoundPath(GraphicsPath& p,RectF r,float radius){
     float d=radius*2;p.AddArc(r.X,r.Y,d,d,180,90);p.AddArc(r.GetRight()-d,r.Y,d,d,270,90);
     p.AddArc(r.GetRight()-d,r.GetBottom()-d,d,d,0,90);p.AddArc(r.X,r.GetBottom()-d,d,d,90,90);p.CloseFigure();
 }
-constexpr float OuterPadding=9, HalfGutter=6, NameGap=4, IconSpace=15;
+constexpr float OuterPadding=7, ColumnGap=6, NameGap=3, IconSpace=15;
 float FontPixels(float rowHeight,float scale){return std::max(2.f*scale,std::min(13.5f*scale,rowHeight-1.5f*scale));}
 bool Percent(const std::wstring& value){return value.ends_with(L'%');}
 bool Approximate(const std::wstring& value){return value.starts_with(L'约');}
 bool SameWidth(const MonitorItem& a,const MonitorItem& b){
-    if(a.batteryIcon!=b.batteryIcon || a.Label()!=b.Label())return false;
+    if(a.batteryIcon!=b.batteryIcon || a.networkRate!=b.networkRate || a.Label()!=b.Label())return false;
+    if(a.networkRate)return true;
     if(Percent(a.value) && Percent(b.value))return Approximate(a.value)==Approximate(b.value);
     return a.value==b.value;
 }
@@ -34,6 +35,22 @@ ValueParts MeasureValue(Graphics& g,const std::wstring& value,Font* numbers,Font
     float unit=percent?Width(g,L"%",units)+1.5f*scale:0;
     float number=Width(g,reserve&&percent?L"888":digits,numbers);
     return {std::move(digits),prefix,number,unit,percent,approximate};
+}
+struct CellWidth { float preferred, minimum; };
+CellWidth MeasureCell(Graphics& g,const MonitorItem& item,Font* label,Font* numbers,Font* units,float scale,bool reserve){
+    const float name=Width(g,item.Label(),label);
+    if(item.value.empty())return {name,std::min(name,12*scale)};
+    float value=reserve && item.networkRate ? Width(g,L"888 MB/s",numbers) :
+        MeasureValue(g,item.value,numbers,units,scale,reserve).Total();
+    float fixed=value+(NameGap+(item.batteryIcon?IconSpace:0))*scale;
+    return {fixed+name, fixed+std::min(name,12*scale)};
+}
+// Share any width shortage between long labels; retain room for both values.
+float LeftWidth(CellWidth left,CellWidth right,float available){
+    const float low=std::min(left.minimum,available/2);
+    const float high=std::max(low,available-std::min(right.minimum,available));
+    const float split=std::clamp(available/2,low,high);
+    return std::clamp(std::min(left.preferred,std::max(split,available-right.preferred)),low,high);
 }
 void Text(Graphics&g,const std::wstring&s,Font*f,Color color,RectF box,float haloOffset,bool light,bool crop=true){
     if(box.Width<=0)return;std::wstring shown=s;
@@ -93,13 +110,10 @@ int CapsulePainter::PreferredWidth(int logicalHeight,int rows,const std::vector<
     Graphics g(&sample);g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
     Fonts(FontPixels((logicalHeight-8)*scale/usedRows,scale));
     float content=0;
-    for(int i=0;i<count;++i){
-        const auto& item=items[i];
-        float group=Width(g,item.Label(),labelFont.get());
-        if(!item.value.empty())group+=(NameGap+(item.batteryIcon?IconSpace:0))*scale+
-            MeasureValue(g,item.value,valueFont.get(),unitFont.get(),scale,true).Total();
-        bool single=i==count-1 && (i%2)==0;
-        content=std::max(content,single?group:2*(group+HalfGutter*scale));
+    for(int i=0;i<count;i+=2){
+        float row=MeasureCell(g,items[i],labelFont.get(),valueFont.get(),unitFont.get(),scale,true).preferred;
+        if(i+1<count)row+=ColumnGap*scale+MeasureCell(g,items[i+1],labelFont.get(),valueFont.get(),unitFont.get(),scale,true).preferred;
+        content=std::max(content,row);
     }
     measuredWidth=std::clamp(int(std::ceil(content/scale+2*OuterPadding+2)),64,236);
     measuredHeight=logicalHeight;measuredRows=usedRows;
@@ -160,20 +174,28 @@ void CapsulePainter::Draw(Graphics&g,float width,float height,int rows,bool ligh
         Pen border(edge,.8f*scale);g.DrawPath(&border,&outline);
     }
     float haloOffset=transparent ? std::max(0.75f,0.65f*scale) : 0;
-    float column=(width-2*padding)/2;
+    const float inner=width-2*padding, gap=ColumnGap*scale;
     for(int row=0;row<rows;row++){
         int remaining=count-row*2;if(remaining<=0)break;
         bool single=remaining==1;
-        if(!single){Pen separator(light?Color(160,218,224,231):Color(125,93,103,119),scale);float y=vertical+row*rowHeight;g.DrawLine(&separator,width/2,y+rowHeight*.3f,width/2,y+rowHeight*.7f);}
+        float left=inner;
+        if(!single){
+            auto measure=[&](int i){return MeasureCell(g,items[i],labelFont.get(),valueFont.get(),unitFont.get(),scale,false);};
+            left=LeftWidth(measure(row*2),measure(row*2+1),std::max(0.f,inner-gap));
+            Pen separator(light?Color(160,218,224,231):Color(125,93,103,119),scale);
+            float x=padding+left+gap/2, y=vertical+row*rowHeight;
+            g.DrawLine(&separator,x,y+rowHeight*.3f,x,y+rowHeight*.7f);
+        }
         for(int col=0;col<(single?1:2);col++){
             int index=row*2+col;const auto& item=items[index];
-            RectF cell(padding+col*column+(col?HalfGutter*scale:0),vertical+row*rowHeight,column-HalfGutter*scale,rowHeight);
-            if(single)cell=RectF(padding,cell.Y,width-padding*2,rowHeight);
+            RectF cell(col?padding+left+gap:padding,vertical+row*rowHeight,col?inner-left-gap:left,rowHeight);
+            if(cell.Width<=0)continue;
+            auto clip=g.Save(); g.SetClip(cell,CombineModeIntersect);
             const auto& name=item.Label();
             float nameWidth=Width(g,name,labelFont.get());
             if(item.value.empty()){
                 float group=std::min(cell.Width,nameWidth);
-                Text(g,name,labelFont.get(),label,RectF(cell.X,cell.Y,group,cell.Height),haloOffset,light);continue;
+                Text(g,name,labelFont.get(),label,RectF(cell.X,cell.Y,group,cell.Height),haloOffset,light);g.Restore(clip);continue;
             }
             auto value=MeasureValue(g,item.value,valueFont.get(),unitFont.get(),scale,false);
             bool device=item.batteryIcon;
@@ -182,12 +204,13 @@ void CapsulePainter::Draw(Graphics&g,float width,float height,int rows,bool ligh
             // Each cell starts at the same left inset. Keep the label, icon and
             // value together instead of centering short names in the column.
             cell.Width=group;
-            float valueX=cell.GetRight()-value.Total();
+            float valueX=std::max(cell.X,cell.GetRight()-value.Total());
             if(device){int n=value.percent?_wtoi(value.digits.c_str()):-1;Color status=n>=0&&n<=20?(light?Color(255,189,127,43):Color(255,230,180,106)):(light?Color(255,65,139,120):Color(255,128,194,172));if(custom)status=ReadableInk(status,luminance,ink,3.0);Battery(g,RectF(cell.X,cell.Y+(rowHeight-7*scale)/2,10*scale,7*scale),n,status,scale);}
             Text(g,name,labelFont.get(),label,RectF(cell.X+glyph,cell.Y,std::max(0.f,valueX-cell.X-glyph-NameGap*scale),cell.Height),haloOffset,light);
             if(value.approximate)Text(g,L"约",unitFont.get(),unit,RectF(valueX,cell.Y+.5f*scale,value.prefixWidth+4*scale,cell.Height),haloOffset,light,false);
             Text(g,value.digits,valueFont.get(),number,RectF(valueX+value.prefixWidth,cell.Y,value.digitWidth+4*scale,cell.Height),haloOffset,light,false);
             if(value.percent)Text(g,L"%",unitFont.get(),unit,RectF(valueX+value.prefixWidth+value.digitWidth+1.5f*scale,cell.Y+scale,value.unitWidth+4*scale,cell.Height),haloOffset,light,false);
+            g.Restore(clip);
         }
     }
 }
@@ -328,7 +351,7 @@ bool CapsulePainter::DpiPreview(const std::wstring&path){
     Font heading(L"Microsoft YaHei UI",18,FontStyleRegular,UnitPixel),caption(L"Microsoft YaHei UI",14,FontStyleRegular,UnitPixel);SolidBrush ink(Color(255,62,72,90));
     g.DrawString(L"跨屏缩放预览 · 示例数据（非桌面截图）",-1,&heading,PointF(30,18),&ink);
     
-    std::vector<MonitorItem> example{{L"CPU",L"29%"},{L"内存",L"81%"},{L"助听器",L"70%",true},{L"黑鼠",L"约90%",true},{L"键盘侠",L"100%",true}};
+    std::vector<MonitorItem> example{{L"CPU",L"29%"},{L"内存",L"81%"},{L"上传",L"28 KB/s",false,L"↑",true},{L"下载",L"1.2 MB/s",false,L"↓",true},{L"办公室键盘",L"100%",true},{L"鼠标",L"约90%",true}};
     int row=0;for(UINT dpi:{96u,120u,144u,192u}){
         float y=70+row++*160.f;
         for(int col=0;col<2;col++){

@@ -26,8 +26,9 @@ constexpr wchar_t CapsuleClass[]=L"BlueBatteryCapsuleNativeV2";
 constexpr wchar_t HoverListClass[]=L"BlueBatteryHoverListNativeV2";
 constexpr wchar_t MainClass[]=L"BlueBatteryDetailNativeV2";
 constexpr UINT Changed=WM_APP+10,TrayMessage=WM_APP+11,RaiseCapsule=WM_APP+12;
+constexpr int PanelActionsTop=116, PanelActionsBottom=143, DeviceListTop=147;
 constexpr UINT Open=100,Refresh=101,All=102,Pin=103,HidePanel=104,Exit=105,Cpu=110,Memory=111,Battery=112,Rows2=113,Rows3=114,Notice=115,Startup=116,Diagnostic=117,Bluetooth=118,Collapse=119,Opacity100=120,Opacity90=121,Opacity75=122,Help=123,CapsuleTaskbar=124,CapsuleDesktop=125,CapsuleReset=126,ComputerBattery=127;
-constexpr UINT BackgroundSystem=128, BackgroundTransparent=129, BackgroundCustom=130;
+constexpr UINT BackgroundSystem=128, BackgroundTransparent=129, BackgroundCustom=130, Upload=131, Download=132;
 std::wstring MemoryText(ULONGLONG bytes){wchar_t text[32];swprintf(text,32,L"%.1f",double(bytes)/1048576);return text;}
 std::wstring IntervalText(int seconds){if(seconds%3600==0)return std::to_wstring(seconds/3600)+L" 小时";if(seconds%60==0)return std::to_wstring(seconds/60)+L" 分钟";return std::to_wstring(seconds)+L" 秒";}
 std::wstring Folder(){wchar_t path[32768]{};GetEnvironmentVariableW(L"LOCALAPPDATA",path,32768);std::wstring dir=std::wstring(path)+L"\\BlueBatteryFloat";CreateDirectoryW(dir.c_str(),nullptr);return dir;}
@@ -36,6 +37,7 @@ std::wstring Beside(const std::wstring& name){auto p=Executable();return p.subst
 std::wstring ReadText(const std::wstring&path){HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);if(f==INVALID_HANDLE_VALUE)return L"";DWORD n=GetFileSize(f,nullptr);if(n>1024*1024){CloseHandle(f);return L"";}std::string s(n,0);DWORD read;ReadFile(f,s.data(),n,&read,nullptr);CloseHandle(f);int count=MultiByteToWideChar(CP_UTF8,0,s.data(),read,nullptr,0);std::wstring text(count,0);MultiByteToWideChar(CP_UTF8,0,s.data(),read,text.data(),count);return text;}
 struct Settings {
     CapsuleBackground background;
+    bool upload=true,download=true;
     bool cpu=true,memory=true,battery=true,computerBattery=true,all=false,pin=true,notice=true,collapsed=false,desktop=false;
     int rows=2,interval=15,opacity=100,left=INT_MIN,top=INT_MIN,capsuleLeft=INT_MIN,capsuleTop=INT_MIN;
     std::wstring path=Folder()+L"\\native.ini";
@@ -55,6 +57,7 @@ struct Settings {
             background.mode = static_cast<BackgroundMode>(mode);
         const int color = get(L"CapsuleBackgroundColor", int(background.color));
         if (color >= 0 && color <= 0xffffff) background.color = COLORREF(color);
+        upload=get(L"Upload",1)!=0; download=get(L"Download",1)!=0;
         cpu=get(L"Cpu",1)!=0;memory=get(L"Memory",1)!=0;battery=get(L"Battery",1)!=0;computerBattery=get(L"ComputerBattery",1)!=0;all=get(L"All",0)!=0;pin=get(L"Pin",1)!=0;notice=get(L"Notice",1)!=0;collapsed=get(L"Collapsed",0)!=0;desktop=get(L"DesktopMode",0)!=0;
         rows=get(L"Rows",2)==3?3:2;int n=get(L"Interval",15);interval=ValidInterval(n)?n:15;opacity=get(L"Opacity",100);if(opacity!=75&&opacity!=90)opacity=100;left=get(L"Left",INT_MIN);top=get(L"Top",INT_MIN);capsuleLeft=get(L"CapsuleLeft",INT_MIN);capsuleTop=get(L"CapsuleTop",INT_MIN);
     }
@@ -62,6 +65,7 @@ struct Settings {
         auto put=[&](const wchar_t*n,int v){auto s=std::to_wstring(v);WritePrivateProfileStringW(L"Monitor",n,s.c_str(),path.c_str());};
         put(L"CapsuleBackgroundMode",int(background.mode));
         put(L"CapsuleBackgroundColor",int(background.color));
+        put(L"Upload",upload); put(L"Download",download);
         put(L"Cpu",cpu);put(L"Memory",memory);put(L"Battery",battery);put(L"ComputerBattery",computerBattery);put(L"All",all);put(L"Pin",pin);put(L"Notice",notice);put(L"Collapsed",collapsed);put(L"DesktopMode",desktop);put(L"Rows",rows);put(L"Interval",interval);put(L"Opacity",opacity);put(L"Left",left);put(L"Top",top);put(L"CapsuleLeft",capsuleLeft);put(L"CapsuleTop",capsuleTop);
     }
 };
@@ -144,7 +148,7 @@ struct App {
         if(!icon)icon=CopyIcon(LoadIconW(nullptr,IDI_APPLICATION));
         WNDCLASSEXW c{sizeof c};c.style=CS_DBLCLKS;c.lpfnWndProc=WindowProc;c.hInstance=instance;c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hIcon=icon;c.hIconSm=icon;c.lpszClassName=CapsuleClass;RegisterClassExW(&c);c.lpszClassName=HoverListClass;RegisterClassExW(&c);c.lpszClassName=MainClass;RegisterClassExW(&c);
         small=MakeFont(12);normal=MakeFont(14);big=MakeFont(21,true);
-        capsule=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_LAYERED,CapsuleClass,L"设备电量悬浮窗 2.2.0.15 原生版",WS_POPUP,0,0,taskWidth,44,nullptr,nullptr,instance,nullptr);
+        capsule=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_LAYERED,CapsuleClass,L"设备电量悬浮窗 2.2.0.16 原生版",WS_POPUP,0,0,taskWidth,44,nullptr,nullptr,instance,nullptr);
         if(!capsule)throw std::runtime_error("Cannot create taskbar window");
         tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,capsule,nullptr,instance,nullptr);
         TOOLINFOW info{sizeof info};info.uFlags=TTF_IDISHWND|TTF_SUBCLASS;info.hwnd=capsule;info.uId=reinterpret_cast<UINT_PTR>(capsule);info.lpszText=const_cast<wchar_t*>(L"双击打开监控界面 · 右键配置");SendMessageW(tooltip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&info));SendMessageW(tooltip,TTM_SETMAXTIPWIDTH,0,600);
@@ -370,7 +374,7 @@ struct App {
     }
     void Tick(){
         DWORD theme=0,themeSize=sizeof theme;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&theme,&themeSize);bool light=theme!=0;if(lightTaskbar!=light){lightTaskbar=light;InvalidateRect(capsule,nullptr,FALSE);}
-        resources=ReadResources();auto next=MonitorItems(resources,devices,settings.cpu,settings.memory,settings.battery,settings.computerBattery);
+        resources=ReadResources();auto next=MonitorItems(resources,devices,settings.cpu,settings.memory,settings.battery,settings.computerBattery,settings.upload,settings.download);
         if(next!=items){items=std::move(next);InvalidateRect(capsule,nullptr,FALSE);}
         bool enableTooltip=!HoverListNeeded();
         if(enableTooltip!=tooltipEnabled){
@@ -413,7 +417,7 @@ struct App {
         HideHoverList();
         HMENU menu=CreatePopupMenu(),content=CreatePopupMenu(),layout=CreatePopupMenu(),interval=CreatePopupMenu(),alpha=CreatePopupMenu(),capsuleMenu=CreatePopupMenu();
         auto item=[](HMENU m,UINT id,const wchar_t*text,bool check=false){AppendMenuW(m,MF_STRING|(check?MF_CHECKED:0),id,text);};
-        AppendMenuW(menu,MF_STRING|MF_DISABLED,0,L"设备电量悬浮窗 2.2.0.15 · 原生轻量版");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+        AppendMenuW(menu,MF_STRING|MF_DISABLED,0,L"设备电量悬浮窗 2.2.0.16 · 原生轻量版");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
         item(menu,Open,L"显示监控界面");item(menu,Refresh,L"立即刷新");
         constexpr UINT firstDevice = 20000;
         HMENU rename = CreatePopupMenu();
@@ -433,7 +437,7 @@ struct App {
         }
         if (targets.empty()) AppendMenuW(rename,MF_STRING|MF_GRAYED,0,L"暂无可改名的设备");
         AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(rename),L"设备改名");
-        item(content,Cpu,L"CPU",settings.cpu);item(content,Memory,L"内存",settings.memory);item(content,ComputerBattery,L"电脑电量",settings.computerBattery);item(content,Battery,L"蓝牙设备电量",settings.battery);AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(content),L"任务栏显示内容");
+        item(content,Cpu,L"CPU",settings.cpu);item(content,Memory,L"内存",settings.memory);item(content,Upload,L"上传速度",settings.upload);item(content,Download,L"下载速度",settings.download);item(content,ComputerBattery,L"电脑电量",settings.computerBattery);item(content,Battery,L"蓝牙设备电量",settings.battery);AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(content),L"任务栏显示内容");
         item(layout,Rows2,L"两列两行",settings.rows==2);item(layout,Rows3,L"两列三行",settings.rows==3);AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(layout),L"任务栏布局");
         for(int n:{5,15,30,60,3600,14400}){auto label=IntervalText(n);item(interval,200+n,label.c_str(),settings.interval==n);}AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(interval),L"设备检查间隔");
         item(capsuleMenu,CapsuleTaskbar,L"固定在任务栏",!settings.desktop);item(capsuleMenu,CapsuleDesktop,L"桌面浮动（可拖动）",settings.desktop);item(capsuleMenu,CapsuleReset,L"恢复桌面位置");AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(capsuleMenu),L"胶囊位置");
@@ -473,6 +477,8 @@ struct App {
             settings.background={BackgroundMode::Custom,picker.rgbResult};
             break;
         }
+        case Upload:settings.upload=!settings.upload;break;
+        case Download:settings.download=!settings.download;break;
         case Cpu:settings.cpu=!settings.cpu;break;case Memory:settings.memory=!settings.memory;break;case ComputerBattery:settings.computerBattery=!settings.computerBattery;break;case Battery:settings.battery=!settings.battery;break;
         case Rows2:settings.rows=2;break;case Rows3:settings.rows=3;break;
         case All:settings.all=!settings.all;scroll=0;break;
@@ -502,21 +508,23 @@ struct App {
             std::wstring computerText=resources.computerBattery>=0?std::to_wstring(resources.computerBattery)+L"%":resources.computerBatteryPresent?L"—":L"无电池";
             Draw(dc,L"CPU "+(resources.cpu<0?L"采样中":std::to_wstring(resources.cpu)+L"%")+L"   ·   内存 "+std::to_wstring(resources.memory)+L"%   ·   电脑 "+computerText,{16,43,r.right-14,68},RGB(148,163,184),small);
             Draw(dc,FormatMemory(resources.used)+L" / "+FormatMemory(resources.total)+L"   ·   原生轻量版",{16,67,r.right-14,89},RGB(148,163,184),small);
-            Draw(dc,settings.all?L"[当前]     [全部 ✓]     [刷新]     [收起]":L"[当前 ✓]     [全部]     [刷新]     [收起]",{16,92,r.right-14,119},RGB(124,182,255),normal);
-            RECT viewport{0,123,r.right,std::max(123L,r.bottom-32)};int saved=SaveDC(dc);IntersectClipRect(dc,viewport.left,viewport.top,viewport.right,viewport.bottom);
+            Draw(dc,L"上传  "+FormatRate(resources.network.upload)+L"     下载  "+FormatRate(resources.network.download),
+                 {16,90,r.right-14,113},RGB(175,201,219),normal);
+            Draw(dc,settings.all?L"[当前]     [全部 ✓]     [刷新]     [收起]":L"[当前 ✓]     [全部]     [刷新]     [收起]",{16,PanelActionsTop,r.right-14,PanelActionsBottom},RGB(124,182,255),normal);
+            RECT viewport{0,DeviceListTop,r.right,std::max<LONG>(DeviceListTop,r.bottom-32)};int saved=SaveDC(dc);IntersectClipRect(dc,viewport.left,viewport.top,viewport.right,viewport.bottom);
             if(!settings.collapsed){auto visible=VisibleDevices();int maxScroll=std::max<int>(0,int(visible.size())*116-(viewport.bottom-viewport.top));scroll=std::clamp(scroll,0,maxScroll);
-                if(visible.empty())Draw(dc,L"当前没有已连接设备，可切换“全部”查看",{16,140,r.right-14,200},RGB(148,163,184),normal,DT_WORDBREAK);
-                int y=123-scroll;for(auto*d:visible){RECT card{12,y+3,r.right-12,y+110};Fill(dc,card,d->connected==1?RGB(30,45,67):RGB(25,37,56));
+                if(visible.empty())Draw(dc,L"当前没有已连接设备，可切换“全部”查看",{16,DeviceListTop+17,r.right-14,DeviceListTop+77},RGB(148,163,184),normal,DT_WORDBREAK);
+                int y=DeviceListTop-scroll;for(auto*d:visible){RECT card{12,y+3,r.right-12,y+110};Fill(dc,card,d->connected==1?RGB(30,45,67):RGB(25,37,56));
                     Draw(dc,d->DisplayName(),{24,y+9,r.right-100,y+37},RGB(237,244,255),normal);
                     Draw(dc,d->BatteryText(),{r.right-98,y+7,r.right-24,y+39},d->connected!=1?RGB(148,163,184):d->battery<=20?RGB(255,176,120):RGB(97,219,178),big,DT_RIGHT|DT_SINGLELINE|DT_VCENTER);
                     Draw(dc,d->StateText()+L" · "+d->transport,{24,y+38,r.right-24,y+58},RGB(148,163,184),small);
                     if(d->battery>=0){RECT track{24,y+65,r.right-24,y+69};Fill(dc,track,RGB(53,67,90));track.right=track.left+(track.right-track.left)*d->battery/100;Fill(dc,track,d->connected==1?RGB(97,219,178):RGB(148,163,184));}
                     Draw(dc,d->Note(),{24,y+78,r.right-24,y+101},RGB(148,163,184),small);y+=116;
                 }
-            }RestoreDC(dc,saved);Fill(dc,{0,std::max(123L,r.bottom-32),r.right,r.bottom},RGB(19,29,45));Draw(dc,scanStatus,{16,r.bottom-30,r.right-14,r.bottom-4},RGB(148,163,184),small);
+            }RestoreDC(dc,saved);Fill(dc,{0,std::max<LONG>(DeviceListTop,r.bottom-32),r.right,r.bottom},RGB(19,29,45));Draw(dc,scanStatus,{16,r.bottom-30,r.right-14,r.bottom-4},RGB(148,163,184),small);
         RestoreDC(dc,mapping);BitBlt(target,0,0,pixels.right,pixels.bottom,dc,0,0,SRCCOPY);SelectObject(dc,oldBitmap);DeleteObject(bitmap);DeleteDC(dc);EndPaint(h,&paint);
     }
-    void DetailAt(int y){auto v=VisibleDevices();int index=(y-123+scroll)/116;if(y<123||index<0||index>=int(v.size()))return;auto&d=*v[index];std::wstring text=d.DisplayName()+(d.alias.empty()?L"":L"\n原名："+d.name)+L"\n连接："+d.StateText()+L"\n电量："+d.BatteryText()+L"\n来源："+d.Note()+L"\n传输："+d.transport+L"\n标识："+d.address+L"\n"+d.detail;MessageBoxW(panel,text.c_str(),L"设备详情",MB_OK|MB_ICONINFORMATION);}
+    void DetailAt(int y){auto v=VisibleDevices();int index=(y-DeviceListTop+scroll)/116;if(y<DeviceListTop||index<0||index>=int(v.size()))return;auto&d=*v[index];std::wstring text=d.DisplayName()+(d.alias.empty()?L"":L"\n原名："+d.name)+L"\n连接："+d.StateText()+L"\n电量："+d.BatteryText()+L"\n来源："+d.Note()+L"\n传输："+d.transport+L"\n标识："+d.address+L"\n"+d.detail;MessageBoxW(panel,text.c_str(),L"设备详情",MB_OK|MB_ICONINFORMATION);}
     LRESULT Message(HWND h,UINT msg,WPARAM w,LPARAM l){
         if(msg==taskbarCreated){if(h==capsule){AddTray();EnsureCapsuleTopmost();Position();}return 0;}
         switch(msg){
@@ -528,7 +536,7 @@ struct App {
             RECT r{};GetClientRect(h,&r);
             if(GET_Y_LPARAM(l)>=r.bottom-DpiPixels(32,WindowDpi(h)))ScrollHover(visibleHoverRows,true);
             return 0;
-        }if(h==capsule&&draggingCapsule){EndCapsuleDrag();return 0;}if(h==panel&&DpiLogical(GET_Y_LPARAM(l),h)>=92&&DpiLogical(GET_Y_LPARAM(l),h)<=119){int x=DpiLogical(GET_X_LPARAM(l),h);if(x<90){settings.all=false;Save();scroll=0;}else if(x<180){settings.all=true;Save();scroll=0;}else if(x<270)Request();else{Command(HidePanel);return 0;}InvalidateRect(panel,nullptr,FALSE);}return 0;
+        }if(h==capsule&&draggingCapsule){EndCapsuleDrag();return 0;}if(h==panel&&DpiLogical(GET_Y_LPARAM(l),h)>=PanelActionsTop&&DpiLogical(GET_Y_LPARAM(l),h)<=PanelActionsBottom){int x=DpiLogical(GET_X_LPARAM(l),h);if(x<90){settings.all=false;Save();scroll=0;}else if(x<180){settings.all=true;Save();scroll=0;}else if(x<270)Request();else{Command(HidePanel);return 0;}InvalidateRect(panel,nullptr,FALSE);}return 0;
         case WM_CAPTURECHANGED:case WM_CANCELMODE:if(h==capsule)EndCapsuleDrag();break;
         case WM_RBUTTONUP:if(h==hoverList)Menu(capsule);else Menu(h);return 0;
         case WM_MOUSEWHEEL:if(h==hoverList){
@@ -573,9 +581,25 @@ int SelfTest(const std::wstring&file){
     r.computerBattery=76;r.computerBatteryPresent=true;r.computerCharging=true;auto computerItems=MonitorItems(r,{},true,true,false,true);check(computerItems.size()==3&&computerItems[2].Text()==L"电脑: 76%",L"Computer battery item");check(MonitorItems(r,{},false,false,false,true).size()==1,L"Computer battery switch");r.computerBattery=-1;r.computerBatteryPresent=false;r.computerCharging=false;check(MonitorItems(r,{},false,false,false,true)[0].Text()==L"电脑: 无电池",L"No computer battery state");
     check(DpiPixels(44,96)==44&&DpiPixels(44,120)==55&&DpiPixels(44,144)==66&&DpiPixels(44,192)==88,L"Capsule heights at 100 / 125 / 150 / 200 percent");
     check(DpiPixels(210,120)==263&&DpiPixels(210,144)==315&&DpiPixels(210,192)==420,L"Capsule width follows the same DPI as text");
+    const std::vector<InterfaceBytes> prior{{1,1000,8000},{2,2000,1000},{3,9000,9000}};
+    auto traffic=NetworkDelta(prior,{{2,3000,2000},{4,100000,90000},{1,3000,14000}},2000);
+    check(traffic.upload==1500 && traffic.download==3500,L"Network directions, elapsed time and adapter turnover");
+    auto quiet=NetworkDelta(prior,prior,1000);
+    check(quiet.upload==0 && quiet.download==0,L"Idle network speed is zero");
+    check(NetworkDelta({},prior,1000).upload<0 && NetworkDelta(prior,{},1000).download<0 &&
+          NetworkDelta(prior,{{1,200,300}},1000).download<0 && NetworkDelta(prior,prior,15000).upload<0,
+          L"No spikes on first sample, disconnect, counter reset or resume");
+    check(FormatRate(-1)==L"—" && FormatRate(0)==L"0 B/s" && FormatRate(999.6)==L"1.0 KB/s" &&
+          FormatRate(1240000)==L"1.2 MB/s",L"Network automatically scales units");
+    r.network={21000,42000};auto up=MonitorItems(r,{},false,false,false,false,true,false);
+    auto down=MonitorItems(r,{},false,false,false,false,false,true);
+    check(up.size()==1 && up[0].Label()==L"↑" && up[0].Text()==L"上传: 21 KB/s" &&
+          down.size()==1 && down[0].Label()==L"↓" && down[0].Text()==L"下载: 42 KB/s",L"Network metrics switch independently");
     Settings backgroundSaved; backgroundSaved.path=file+L".background.ini";
+    backgroundSaved.upload=false; backgroundSaved.download=true;
     backgroundSaved.background={BackgroundMode::Custom,RGB(40,110,210)}; backgroundSaved.Save();
     Settings backgroundLoaded; backgroundLoaded.path=backgroundSaved.path; backgroundLoaded.Load();
+    check(!backgroundLoaded.upload && backgroundLoaded.download,L"Network choices survive restart");
     check(backgroundLoaded.background.mode==BackgroundMode::Custom && backgroundLoaded.background.color==RGB(40,110,210),L"Custom capsule color persists");
     backgroundSaved.background.mode=BackgroundMode::Transparent; backgroundSaved.Save(); backgroundLoaded.Load();
     check(backgroundLoaded.background.mode==BackgroundMode::Transparent,L"Transparent capsule mode persists");
@@ -592,6 +616,13 @@ int SelfTest(const std::wstring&file){
     check(customPixel.GetA()>=240,L"Custom capsule paints an opaque background");
     CapsulePainter painter;
     std::vector<MonitorItem> sample{{L"CPU",L"9%"},{L"内存",L"81%"},{L"助听器",L"70%",true},{L"黑鼠",L"约90%",true},{L"键盘侠",L"100%",true}};
+    std::vector<MonitorItem> pair{up[0],down[0]};
+    int pairWidth=painter.PreferredWidth(44,2,pair);
+    pair[0].value=L"0 B/s";pair[1].value=L"999 MB/s";
+    check(painter.PreferredWidth(44,2,pair)==pairWidth,L"Changing network units preserves outer width");
+    std::vector<MonitorItem> mixed{{L"办公室键盘",L"70%",true},{L"CPU",L"5%"}};
+    auto narrowPair=painter.PreferredWidth(44,2,mixed);
+    mixed[1]=mixed[0];check(narrowPair<painter.PreferredWidth(44,2,mixed),L"A short neighbour uses less space than a second long name");
     int compact=painter.PreferredWidth(44,3,sample);
     check(compact<210,L"Three-row capsule fits short aliases");
     sample[0].value=L"100%";sample[3].value=L"约1%";
@@ -669,7 +700,9 @@ bool TestDeviceNames(App& app,std::wstring& report) {
 }
 
 int UiTest(const std::wstring&path){
-    App app(true);app.Create();app.settings.rows=2;app.Tick();RECT r{};GetClientRect(app.capsule,&r);bool ok=r.bottom>=24;
+    App app(true);app.Create();app.settings.rows=2;app.Tick();RECT r{};GetClientRect(app.capsule,&r);std::wstring monitorReport;
+    auto verify=[&](bool good,const wchar_t* condition){if(!good)monitorReport+=std::wstring(L"FAIL: ")+condition+L"\n";return good;};
+    bool ok=verify(r.bottom>=24,L"initial capsule height");
     app.items={{L"CPU",L"9%"},{L"内存",L"81%"},{L"电脑",L"76%",true},{L"G304X",L"约30%",true},{L"键盘",L"85%",true}};
     app.hoverCapsule=true;app.ShowHoverList();RECT hoverRect{};GetWindowRect(app.hoverList,&hoverRect);bool hoverShown=app.HoverListNeeded()&&app.hoverList&&IsWindowVisible(app.hoverList)&&hoverRect.right-hoverRect.left>=176&&hoverRect.bottom-hoverRect.top>=12+5*28;app.HideHoverList();app.items.resize(4);bool hoverThreshold=!app.HoverListNeeded()&&!IsWindowVisible(app.hoverList);
     app.settings.rows=3;app.items.resize(6);hoverThreshold&=!app.HoverListNeeded();app.items.resize(7);
@@ -678,11 +711,11 @@ int UiTest(const std::wstring&path){
     hoverThreshold&=app.hoverPopup&&IsWindowVisible(app.hoverList)&&SendMessageW(app.hoverList,WM_MOUSEACTIVATE,0,0)==MA_NOACTIVATE;
     app.items.resize(40);app.HoverListChanged();for(int i=0;i<20;++i)SendMessageW(app.hoverList,WM_MOUSEWHEEL,MAKEWPARAM(0,-WHEEL_DELTA),0);
     hoverThreshold&=app.firstHoverRow+app.visibleHoverRows==40;app.items.resize(6);app.HoverListChanged();
-    hoverThreshold&=!app.hoverListVisible;app.hoverCapsule=false;app.settings.rows=2;ok=ok&&hoverShown&&hoverThreshold;
-    app.settings.desktop=true;app.settings.capsuleLeft=120;app.settings.capsuleTop=140;app.Position();RECT desktopRect{};GetWindowRect(app.capsule,&desktopRect);ok=ok&&desktopRect.left==120&&desktopRect.top==140&&((GetWindowLongW(app.capsule,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0);
-    SendMessageW(app.capsule,WM_LBUTTONDOWN,MK_LBUTTON,0);SendMessageW(app.capsule,WM_LBUTTONUP,0,0);ok=ok&&app.settings.capsuleLeft==desktopRect.left&&app.settings.capsuleTop==desktopRect.top;
+    hoverThreshold&=!app.hoverListVisible;app.hoverCapsule=false;app.settings.rows=2;ok &= verify(hoverShown&&hoverThreshold,L"overflow list behaviour");
+    app.settings.desktop=true;app.settings.capsuleLeft=120;app.settings.capsuleTop=140;app.Position();RECT desktopRect{};GetWindowRect(app.capsule,&desktopRect);ok &= verify(desktopRect.left==120&&desktopRect.top==140&&((GetWindowLongW(app.capsule,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0),L"floating capsule position and topmost style");
+    SendMessageW(app.capsule,WM_LBUTTONDOWN,MK_LBUTTON,0);SendMessageW(app.capsule,WM_LBUTTONUP,0,0);ok &= verify(app.settings.capsuleLeft==desktopRect.left&&app.settings.capsuleTop==desktopRect.top,L"saved drag origin");
     std::vector<RECT> workAreas;EnumDisplayMonitors(nullptr,nullptr,CollectWorkAreas,reinterpret_cast<LPARAM>(&workAreas));
-    std::wstring monitorReport;monitorReport+=((hoverShown&&hoverThreshold)?L"PASS":L"FAIL");monitorReport+=L": hover list threshold / window sizing / hide behavior\n";ok=ok&&!workAreas.empty();
+    monitorReport+=((hoverShown&&hoverThreshold)?L"PASS":L"FAIL");monitorReport+=L": hover list threshold / window sizing / hide behavior\n";ok &= verify(!workAreas.empty(),L"monitor enumeration");
     for(const auto&work:workAreas){
         int x=int(work.left)+std::max(4,std::min(48,(int(work.right-work.left)-app.taskWidth)/2)),y=int(work.top)+std::max(4,std::min(48,(int(work.bottom-work.top)-44)/2));
         SendMessageW(app.capsule,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(10,10));
@@ -697,27 +730,27 @@ int UiTest(const std::wstring&path){
         UINT dpi=WindowDpi(app.capsule);bool scaled=moved.right-moved.left==DpiPixels(app.taskWidth,dpi)&&moved.bottom-moved.top==DpiPixels(44,dpi);
         Settings saved=app.settings;saved.path=path+L".settings.ini";saved.Save();Settings loaded;loaded.path=saved.path;loaded.Load();DeleteFileW(saved.path.c_str());
         bool persisted=loaded.desktop&&loaded.capsuleLeft==x&&loaded.capsuleTop==y;
-        ok=ok&&held&&retained&&persisted&&scaled;
+        ok &= verify(held&&retained&&persisted&&scaled,L"drag, DPI and position persistence");
         monitorReport+=(held&&retained&&persisted&&scaled?L"PASS":L"FAIL")+std::wstring(L": monitor work area [")+std::to_wstring(work.left)+L","+std::to_wstring(work.top)+L","+std::to_wstring(work.right)+L","+std::to_wstring(work.bottom)+L"], destination ("+std::to_wstring(x)+L","+std::to_wstring(y)+L"), DPI "+std::to_wstring(dpi)+L", capsule "+std::to_wstring(moved.right-moved.left)+L"x"+std::to_wstring(moved.bottom-moved.top)+L", drag / timer / release / persistence / display change / DPI dimensions\n";
     }
-    SendMessageW(app.capsule,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(10,10));ReleaseCapture();ok=ok&&!app.draggingCapsule;
-    app.Command(CapsuleTaskbar);ok=ok&&!app.settings.desktop;
-    RECT taskbarCapsule{};GetWindowRect(app.capsule,&taskbarCapsule);HWND taskbar=FindWindowW(L"Shell_TrayWnd",nullptr);if(taskbar){UINT dpi=WindowDpi(taskbar);RECT tb{};GetWindowRect(taskbar,&tb);if(tb.right-tb.left>=tb.bottom-tb.top){ok=ok&&taskbarCapsule.right-taskbarCapsule.left==DpiPixels(app.taskWidth,dpi)&&taskbarCapsule.bottom-taskbarCapsule.top==std::max(DpiPixels(24,dpi),int(tb.bottom-tb.top)-DpiPixels(2,dpi)*2);RECT list{};if(app.TaskListRect(taskbar,list)&&taskbarCapsule.top>=tb.top&&taskbarCapsule.bottom<=tb.bottom)ok=ok&&taskbarCapsule.left>=list.right+DpiPixels(8,dpi);}}
-    SendMessageW(app.capsule,WM_LBUTTONDBLCLK,MK_LBUTTON,0);ok=ok&&app.panel&&IsWindowVisible(app.panel);
+    SendMessageW(app.capsule,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(10,10));ReleaseCapture();ok &= verify(!app.draggingCapsule,L"released mouse capture");
+    app.Command(CapsuleTaskbar);ok &= verify(!app.settings.desktop,L"return to taskbar");
+    RECT taskbarCapsule{};GetWindowRect(app.capsule,&taskbarCapsule);HWND taskbar=FindWindowW(L"Shell_TrayWnd",nullptr);if(taskbar){UINT dpi=WindowDpi(taskbar);RECT tb{};GetWindowRect(taskbar,&tb);if(tb.right-tb.left>=tb.bottom-tb.top){ok &= verify(taskbarCapsule.right-taskbarCapsule.left==DpiPixels(app.taskWidth,dpi)&&taskbarCapsule.bottom-taskbarCapsule.top==std::max(DpiPixels(24,dpi),int(tb.bottom-tb.top)-DpiPixels(2,dpi)*2),L"taskbar capsule size");RECT list{};if(app.TaskListRect(taskbar,list)&&taskbarCapsule.top>=tb.top&&taskbarCapsule.bottom<=tb.bottom)ok &= verify(taskbarCapsule.left>=list.right+DpiPixels(8,dpi),L"task button clearance");}}
+    SendMessageW(app.capsule,WM_LBUTTONDBLCLK,MK_LBUTTON,0);ok &= verify(app.panel&&IsWindowVisible(app.panel),L"double-click opens panel");
     for(const auto&work:workAreas){
         SetWindowPos(app.panel,nullptr,work.left+48,work.top+48,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
         UINT dpi=WindowDpi(app.panel);app.settings.all=false;
-        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(120,dpi),DpiPixels(104,dpi)));bool hit=app.settings.all;
-        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(45,dpi),DpiPixels(104,dpi)));hit=hit&&!app.settings.all;
-        InvalidateRect(app.panel,nullptr,FALSE);UpdateWindow(app.panel);ok=ok&&hit;
+        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(120,dpi),DpiPixels((PanelActionsTop+PanelActionsBottom)/2,dpi)));bool hit=app.settings.all;
+        SendMessageW(app.panel,WM_LBUTTONUP,0,MAKELPARAM(DpiPixels(45,dpi),DpiPixels((PanelActionsTop+PanelActionsBottom)/2,dpi)));hit=hit&&!app.settings.all;
+        InvalidateRect(app.panel,nullptr,FALSE);UpdateWindow(app.panel);ok &= verify(hit,L"panel hit targets");
         monitorReport+=(hit?L"PASS":L"FAIL")+std::wstring(L": monitor panel painting / button hit coordinates at DPI ")+std::to_wstring(dpi)+L"\n";
     }
-    SendMessageW(app.panel,WM_CLOSE,0,0);ok=ok&&!IsWindowVisible(app.panel);
-    SendMessageW(app.capsule,WM_LBUTTONDBLCLK,MK_LBUTTON,0);ok=ok&&IsWindowVisible(app.panel);
-    app.Command(Rows3);ok=ok&&app.settings.rows==3;app.Command(Cpu);ok=ok&&app.items.size()>=1;
+    SendMessageW(app.panel,WM_CLOSE,0,0);ok &= verify(!IsWindowVisible(app.panel),L"panel close");
+    SendMessageW(app.capsule,WM_LBUTTONDBLCLK,MK_LBUTTON,0);ok &= verify(IsWindowVisible(app.panel),L"double-click restores panel");
+    app.Command(Rows3);ok &= verify(app.settings.rows==3,L"three-row selection");app.Command(Cpu);ok &= verify(app.items.size()>=1,L"monitor content selection");
     SendMessageW(app.capsule,WM_PAINT,0,0);SendMessageW(app.panel,WM_PAINT,0,0);
-    ok=ok&&SendMessageW(app.capsule,WM_MOUSEACTIVATE,0,0)==MA_NOACTIVATE;
-    DWORD handles=0;GetProcessHandleCount(GetCurrentProcess(),&handles);DWORD gdi=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS),user=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);for(int i=0;i<100;i++){app.Tick();InvalidateRect(app.capsule,nullptr,FALSE);UpdateWindow(app.capsule);InvalidateRect(app.panel,nullptr,FALSE);UpdateWindow(app.panel);}DWORD after=0;GetProcessHandleCount(GetCurrentProcess(),&after);ok=ok&&after<=handles+3&&GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)<=gdi+2&&GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS)<=user+2;
+    ok &= verify(SendMessageW(app.capsule,WM_MOUSEACTIVATE,0,0)==MA_NOACTIVATE,L"no focus activation");
+    DWORD handles=0;GetProcessHandleCount(GetCurrentProcess(),&handles);DWORD gdi=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS),user=GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS);for(int i=0;i<100;i++){app.Tick();InvalidateRect(app.capsule,nullptr,FALSE);UpdateWindow(app.capsule);InvalidateRect(app.panel,nullptr,FALSE);UpdateWindow(app.panel);}DWORD after=0;GetProcessHandleCount(GetCurrentProcess(),&after);ok &= verify(after<=handles+3&&GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS)<=gdi+2&&GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS)<=user+2,L"redraw handle usage");
     ok &= TestDeviceNames(app,monitorReport);
     WriteUtf8(path,(ok?L"PASS: native windows, per-monitor DPI sizing, multi-monitor desktop drag, coordinate persistence, capture release, display-change handling, monitor-panel DPI input, double-click show/restore, close-to-tray, layout/content changes, no-activate handling, 100 redraws without handle growth\n":L"FAIL: UI regression\n")+monitorReport);return ok?0:1;
 }

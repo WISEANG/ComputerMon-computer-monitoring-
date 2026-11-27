@@ -275,13 +275,17 @@ Resources ReadResources(){
     static ULONGLONG last=0,privateBytes=0;static std::vector<ULONG_PTR> pages;
     auto now=GetTickCount64();if(!last||now-last>=5000){last=now;size_t capacity=size_t(r.workingSet/4096*2+8192);if(capacity>pages.size())pages.resize(capacity);
         if(QueryWorkingSet(GetCurrentProcess(),pages.data(),DWORD(pages.size()*sizeof(ULONG_PTR)))){auto info=reinterpret_cast<PSAPI_WORKING_SET_INFORMATION*>(pages.data());privateBytes=0;for(ULONG_PTR n=0;n<info->NumberOfEntries;n++)if(!info->WorkingSetInfo[n].Shared)privateBytes+=4096;}}
-    r.privateWorkingSet=privateBytes;return r;
+    r.privateWorkingSet=privateBytes;
+    r.network=ReadNetworkRates();
+    return r;
 }
-std::vector<MonitorItem> MonitorItems(const Resources&r,const std::vector<Device>&devices,bool cpu,bool memory,bool battery,bool computerBattery){
+std::vector<MonitorItem> MonitorItems(const Resources&r,const std::vector<Device>&devices,bool cpu,bool memory,bool battery,bool computerBattery,bool upload,bool download){
     std::vector<MonitorItem> result;
     auto percent = [](int value) -> std::wstring { return value < 0 ? L"—" : std::to_wstring(value) + L"%"; };
     if(cpu) result.push_back({L"CPU", percent(r.cpu)});
     if(memory) result.push_back({L"内存", percent(r.memory)});
+    if(upload) result.push_back({L"上传", FormatRate(r.network.upload), false, L"↑", true});
+    if(download) result.push_back({L"下载", FormatRate(r.network.download), false, L"↓", true});
     if(computerBattery) result.push_back({L"电脑", r.computerBatteryPresent || r.computerBattery >= 0 ? percent(r.computerBattery) : L"无电池", r.computerBattery >= 0});
     if(battery){
         std::vector<const Device*> current;

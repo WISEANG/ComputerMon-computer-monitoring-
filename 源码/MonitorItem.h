@@ -5,6 +5,7 @@ struct MonitorItem {
     std::wstring name, value;
     bool batteryIcon = false;
     std::wstring shortName;
+    bool networkRate = false;
 
     const std::wstring& Label() const { return shortName.empty() ? name : shortName; }
     std::wstring Text() const { return value.empty() ? name : name + L": " + value; }
