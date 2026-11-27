@@ -1,0 +1,44 @@
+#pragma code_page(65001)
+1 ICON "../app.ico"
+1 24 "app.manifest"
+1 VERSIONINFO
+ FILEVERSION 2,2,0,15
+ PRODUCTVERSION 2,2,0,15
+ FILEOS 0x40004
+ FILETYPE 1
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "080404b0"
+  BEGIN
+   VALUE "FileDescription", "设备电量与系统监控（原生轻量版）\0"
+   VALUE "FileVersion", "2.2.0.15\0"
+   VALUE "InternalName", "BlueBatteryFloat\0"
+   VALUE "OriginalFilename", "BlueBatteryFloat.exe\0"
+   VALUE "ProductName", "设备电量悬浮窗\0"
+   VALUE "ProductVersion", "2.2\0"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x0804, 1200
+ END
+END
+
+
+#include <windows.h>
+#include "RenameIds.h"
+IDD_RENAME DIALOGEX 0, 0, 234, 99
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "设备改名"
+FONT 9, "Microsoft YaHei UI"
+BEGIN
+    LTEXT "原名", 1004, 10, 11, 37, 12
+    LTEXT "", IDC_ORIGINAL_NAME, 50, 11, 174, 12, SS_NOPREFIX | SS_ENDELLIPSIS
+    LTEXT "显示名称", 1005, 10, 31, 37, 13
+    EDITTEXT IDC_DEVICE_ALIAS, 50, 28, 174, 17, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "留空使用原名", 1006, 50, 49, 160, 12
+    PUSHBUTTON "恢复原名", IDC_RESET_NAME, 10, 72, 54, 17
+    DEFPUSHBUTTON "保存", IDOK, 118, 72, 50, 17
+    PUSHBUTTON "取消", IDCANCEL, 174, 72, 50, 17
+END

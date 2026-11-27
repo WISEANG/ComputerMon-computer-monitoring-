@@ -1,0 +1,44 @@
+原生 2.1 源码编译说明
+
+开发语言：C++20。界面：Win32 / GDI / 系统 GDI+。单进程，不依赖 .NET / WPF / WebView。
+目标：Windows 10 / 11 x64。
+
+本次工具链
+· Zig 0.14.0-dev.2456（Windows x64），通过 Zig 自带 clang / libc++ / Windows 头文件编译。
+  下载来源：npm 包 @ryoppippi/zig-win32-x64，版本 0.14.0-dev.2456。
+  https://www.npmjs.com/package/@ryoppippi/zig-win32-x64
+· C++/WinRT 头文件来自微软 Windows SDK 10.0.26100.1742 NuGet 包：
+  https://www.nuget.org/packages/Microsoft.Windows.SDK.CPP/10.0.26100.1742
+  提取其中 c/Include/10.0.26100.0/cppwinrt/ 目录。
+  C++/WinRT 项目：https://github.com/microsoft/cppwinrt （MIT）
+
+PowerShell 编译示例（从源码目录执行）
+& .\编译.ps1 -ZigPath 'C:\工具\zig\zig.exe' -WinRtInclude 'C:\工具\sdk\cppwinrt'
+
+编译脚本使用 zig rc 内嵌图标、清单和版本信息，再编译三个 CPP 文件。
+CPP 中 include <winrt/…> 由 -WinRtInclude 指定目录提供。
+脚本默认的 work/native-tools 路径仅供当前开发工作区使用，分享后请显式指定参数。
+编译工具和 SDK 未打包进发布文件，运行 EXE 无需安装它们。
+
+诊断 / 回归入口
+BlueBatteryFloat.exe --self-test C:\临时\core.txt
+BlueBatteryFloat.exe --ui-self-test C:\临时\ui.txt
+BlueBatteryFloat.exe --diagnose C:\临时\devices.txt 3
+BlueBatteryFloat.exe --show
+
+前两个入口独立运行，不启动扫描后台、不写入用户设置。
+--diagnose 执行指定次数的真实设备扫描后写文本并退出；次数范围 1–10。
+--show 启动正常监控并展开监控窗口，便于日常打开及内存测量。
+没有为低内存测试提供特殊简化后端，也没有调用 EmptyWorkingSet 或等效裁剪接口。
+
+验证范围
+核心测试覆盖电量量程、无效报告、G304/G304 X 型号别名、雷柏状态校验、历史状态与项目筛选。
+窗口测试覆盖双击显示/恢复、关闭收起、内容/布局切换、不激活行为，以及重复绘制
+时进程句柄、GDI 对象和 USER 对象数量的稳定性。
+本机实际电量读取验证对象为 G304；其余硬件需要各自实机验证。
+
+
+胶囊渲染预览：BlueBatteryFloat.exe --render-capsule C:\临时\capsule.png
+Capsule.cpp 的 Draw 函数同时用于运行时的分层窗口与示例预览。
+运行时复用绘图表面和字体，采用预乘透明度平滑圆角，保持点击区域与外形一致。
+

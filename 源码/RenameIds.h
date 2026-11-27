@@ -1,0 +1,5 @@
+#pragma once
+#define IDD_RENAME 210
+#define IDC_ORIGINAL_NAME 1001
+#define IDC_DEVICE_ALIAS 1002
+#define IDC_RESET_NAME 1003
